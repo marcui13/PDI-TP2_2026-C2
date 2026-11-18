@@ -165,3 +165,107 @@ Ordena los candidatos de izquierda a derecha por `x` y busca la estructura exact
    Para cada umbral `th in range(30, 180, 5)`, filtra las componentes internas que miden entre el $35\%$ y el $92\%$ del alto del recorte (`0.35 * hc <= h <= 0.92 * hc`), con `1.25 <= h/w <= 3.5` y `area >= 15`. Selecciona el umbral que produce **exactamente 6 componentes** con alturas uniformes (`max(hs) - min(hs) <= 4`) y máximo puntaje `sum(areas) - 10 * std(hs)`.
 4. **Ordenamiento Izquierda-Derecha y Extracción (`C1`..`C6`):**  
    Ordena las 6 componentes por `x` creciente (`C1, C2, C3` = Letras; `C4, C5, C6` = Dígitos) y guarda tanto la máscara limpia como el recorte de cada carácter individual. **Efectividad: 72/72 caracteres segmentados (100%).**
+
+### 4.4. Invarianza a Traslación, Rotación y Cambios de Escala (Problema 2)
+* **Invarianza a Traslación:** Top-Hat (`cv2.MORPH_TOPHAT`), `cv2.connectedComponentsWithStats` y `imclearborder` operan de forma local o relativa a los centroides/cajas contenedoras, sin asumir ninguna posición fija en la imagen (`12/12` en Punto A y `12/12` en Punto B bajo desplazamiento).
+* **Invarianza a Escala:**
+  - El tamaño del elemento estructurante Top-Hat (`21x9` en `640×360`), los límites geométricos de Regla 1 (`h`, `w`, `area_min`) y las tolerancias de altura/colinealidad en Reglas 2 y 3 escalan proporcionalmente con `scale_f = min(H, W) / 360.0` y con la altura media `h_mean` de cada triplete.
+  - Asimismo, las distancias inter-carácter (`dx1, dx2, dx_central`) y los márgenes del recorte (`pad_x, pad_y`) son adimensionales/proporcionales a `h_mean` y `dx_intra`. Esto permite detectar `12/12` patentes y `72/72` caracteres incluso duplicando la resolución (`2.0x` $\rightarrow$ `1280×720`). *(Por debajo de `0.75x`, caracteres originalmente de `5 px` de ancho se fusionan por submuestreo).*
+* **Invarianza a Rotación:**
+  - La Regla 2 tolera inclinaciones de patente de hasta `|dy| <= 0.35 * h_mean` ($\approx \pm 19^\circ$, como en `img04.png`) y la Regla 3 proyecta la colinealidad entre tripletes sobre la recta inclinada (`dy_esperado = dy1 * dx_central / dx_intra`).
+  - Por diseño (`info_patentes.txt`), el descriptor `Alto/Ancho` en `[1.25, 3.5]` y el ordenamiento horizontal asumen vehículos en orientación normal (no patentes verticales a `90°`), logrando `11/12` a `-8°` y `8/12` a `+8°`.
+
+---
+
+## 5. Apuntes Detallados de Defensa — Problema 1 (`problema1_monedas_y_dados.py`)
+
+### 5.1. `segmentar_objetos()` — Preguntas Finas de Diseño y Parámetros
+1. **¿Por qué `cv2.medianBlur(gray, 11)` usa el parámetro `11`?**
+   - El parámetro `ksize = 11` define una ventana cuadrada de $11\times 11$ píxeles (debe ser impar y $>1$).
+   - En una imagen de alta resolución como `monedas.jpg` ($3871\times 2681\text{ px}$), las monedas tienen diámetros de $\sim 280\text{ a }380\text{ px}$, mientras que la rugosidad/grano de la mesa y el ruido impulsivo ocupan entre $3$ y $5\text{ px}$ de radio.
+   - Una ventana chica (`3` o `5`) no alcanza a alisar la textura de la mesa, generando falsos gradientes en el fondo. Una ventana muy grande (ej. `25` o `31`) redondearía excesivamente las esquinas de los dados o borraría detalles finos de borde, además de ser computacionalmente más lenta. `11` es el punto justo: suaviza por completo el grano de la mesa preservando los bordes escalón bien nítidos (ventaja no lineal de la mediana frente al filtro Gaussiano).
+
+2. **Justificación de $+0.9\,\sigma$ y cálculo dinámico de `k` (`grad_u8`):**
+   - El histograma de `grad_u8` es **fuertemente asimétrico a la derecha** ($\mu = 6.03$, $\sigma = 15.89$): ~95% de los píxeles pertenecen al fondo o al interior liso de los objetos (gradiente $\approx 0$), y solo ~5% pertenece a bordes reales (cola larga hacia valores altos).
+   - Por eso Otsu sobre `grad_u8` falla ($T = 65$, demasiado alto porque busca dos campanas separadas) y Triangle queda demasiado bajo ($T = 7$, mete ruido).
+   - **Cálculo dinámico de `k`:** en lugar de fijar `0.9` a mano, el código barre `k` en `[0.5, 1.5]` (paso `0.1`), evalúa `T = round(mu + k * sigma)` seguido de clausura + `imfillhole` + apertura, y cuenta cuántas componentes cerradas válidas (`area >= AREA_MIN`) sobreviven. Elige el **mayor `k`** que alcanza el máximo número de objetos válidos (`k = 0.9 -> T = 20.0`, 19 objetos):
+     - **Si `k` es menor** (ej. `k = 0.2 -> T = 9`): pasa ruido/textura de la mesa que fusiona objetos cercanos (baja a 9 componentes).
+     - **Si `k` es mayor** (ej. `k = 2.5 -> T = 46`): los tramos de borde con menor contraste se cortan, dejando contornos abiertos que `imfillhole` no puede rellenar (baja a 9 componentes).
+
+3. **¿Por qué en el paso 5 se usa `MORPH_ELLIPSE` y `(15, 15)`?**
+   - **Forma `MORPH_ELLIPSE`:** los objetos principales son monedas circulares y los contornos tienen orientaciones en todas las direcciones ($0^\circ$ a $360^\circ$). Un elemento estructurante elíptico/circular es **isotrópico** (mismo radio en todas direcciones), evitando introducir sesgos direccionales o esquinas artificiales que sí produciría un `MORPH_RECT`.
+   - **Tamaño `(15, 15)` (radio $\approx 7\text{ px}$):** la clausura (dilatación seguida de erosión) sirve para **puentear micro-cortes** de hasta $\sim 14\text{ px}$ en el anillo de borde antes de aplicar `imfillhole`. Con `(15, 15)` sella perfectamente esas brechas sin fusionar monedas vecinas (que están separadas por decenas de píxeles).
+
+4. **¿Cómo funciona en detalle `imfillhole(img)`?**
+   - Basado en reconstrucción morfológica geodésica (`PI_U6_Morfologico_p2_Reconstruccion.py`, U6):
+     1. Se copia `img` en `img_flood_fill` y se crea una máscara de `cv2.floodFill` de tamaño `(H+2, W+2)`.
+     2. Se lanza `floodFill` desde la semilla `(0, 0)` (garantizada en `0` porque anulamos un marco de `10 px` en `grad_u8`), pintando de blanco (`255`) **todo el fondo exterior conectado al borde** sin poder cruzar los anillos cerrados de los objetos.
+     3. Al invertir (`cv2.bitwise_not(img_flood_fill)`), el fondo exterior pasa a `0` y únicamente el **interior de los anillos cerrados** queda en `255`.
+     4. Haciendo el `OR` lógico (`img | img_flood_fill_inv`), se obtienen los objetos completamente rellenos conservando intacto su contorno original.
+
+5. **¿Por qué en el paso 7 se usa `MORPH_ELLIPSE` y `(31, 31)`?**
+   - La apertura (erosión seguida de dilatación) elimina salientes finos, pelusas o pequeños fragmentos que hayan quedado pegados por fuera de los objetos y suaviza el perímetro.
+   - Usa `MORPH_ELLIPSE` por isotropía (respetar la geometría circular de las monedas).
+   - Usa `(31, 31)` (radio $\approx 15\text{ px}$) porque los objetos reales tienen diámetros de $\sim 280\text{ a }380\text{ px}$, de modo que un disco de diámetro $31\text{ px}$ cabe holgadamente dentro de cualquier moneda o dado sin borrarlos, pero elimina cualquier espícula o resto externo de hasta $30\text{ px}$ de espesor.
+
+6. **¿Cuáles son los 4 valores retornados por `cv2.connectedComponentsWithStats(bw_mask)` en el paso 8?**
+   - `num_labels` (`int`): cantidad total de etiquetas asignadas, incluyendo el fondo (etiqueta `0`). Si hay 19 objetos, `num_labels = 20`.
+   - `labels` (`ndarray` `H x W`, `int32`): mapa de etiquetas del mismo tamaño que `bw_mask`, donde cada píxel contiene el ID de la componente conexa a la que pertenece (`0` para fondo, `1..num_labels-1` para objetos).
+   - `stats` (`ndarray` `num_labels x 5`, `int32`): tabla de estadísticas de cada etiqueta con 5 columnas:
+     - `cv2.CC_STAT_LEFT` (col `0`): coordenada `x` mínima de la caja contenedora.
+     - `cv2.CC_STAT_TOP` (col `1`): coordenada `y` mínima de la caja contenedora.
+     - `cv2.CC_STAT_WIDTH` (col `2`): ancho de la caja contenedora.
+     - `cv2.CC_STAT_HEIGHT` (col `3`): alto de la caja contenedora.
+     - `cv2.CC_STAT_AREA` (col `4`): área total en píxeles de la componente.
+   - `centroids` (`ndarray` `num_labels x 2`, `float64`): coordenadas `(cx, cy)` del centroide geométrico de cada etiqueta.
+
+7. **¿De dónde sale `AREA_MIN` y cómo se calcula dinámicamente?**
+   - Originalmente `AREA_MIN = 15000` se estimó observando que los objetos más chicos (monedas de 10 centavos) tienen área $\approx 62\,612\text{ px}^2$, mientras que cualquier resto residual es mucho menor.
+   - Para hacerlo **independiente de la resolución**, se calcula dinámicamente como una fracción fija del área total de la imagen: `AREA_MIN = max(500.0, 0.0014 * H * W)`. En `monedas.jpg` ($3871\times 2681$), da $14\,529.4\text{ px}^2$ ($0.14\%$ de la imagen), descartando ruido pequeño incluso si la foto se reescala a otra resolución.
+
+---
+
+### 5.2. `clasificar_monedas()` — Umbrales Dinámicos de Área
+- En lugar de fijar `80000` y `102000` manualmente, se implementa un **criterio de máxima separación en 1D**:
+  1. Se ordenan las áreas de las monedas detectadas de menor a mayor (`areas_ord`).
+  2. Se calculan las diferencias consecutivas entre áreas vecinas (`np.diff(areas_ord)`).
+  3. Se identifican los **2 mayores saltos inter-clase** (`np.argsort(diffs)[-2:]`).
+  4. Se colocan los umbrales exactamente en el **punto medio** de cada salto:
+     - `UMBRAL_AREA_10C_1P = (areas_ord[i1] + areas_ord[i1+1]) / 2` $\rightarrow$ **$79\,743.8\text{ px}^2$** (salto entre $67\,606.0$ y $91\,881.5\text{ px}^2$).
+     - `UMBRAL_AREA_1P_50C = (areas_ord[i2] + areas_ord[i2+1]) / 2` $\rightarrow$ **$102\,380.8\text{ px}^2$** (salto entre $97\,154.5$ y $107\,607.0\text{ px}^2$).
+- De este modo, si se cambia la distancia de la cámara o la resolución de la foto, los 3 clústeres de tamaño siguen separándose automáticamente sin tocar constantes.
+
+---
+
+### 5.3. `analizar_dados()` — Umbral `90`, `RHO_PIP_TH` y `AREA_PIP_MIN` Dinámico
+1. **¿Por qué `cv2.threshold(crop_gray, 90, 255, cv2.THRESH_BINARY_INV)` usa `90`?**
+   - Dentro del recorte del dado hay tres regiones de intensidad bien diferenciadas:
+     - **Puntos negros (pips):** cavidades pintadas de negro muy oscuro ($I < 70$).
+     - **Plástico blanco del dado:** superficie clara ($I > 160$, percentil 75 $\approx 200$).
+     - **Bisel/sombra del dado y mesa:** valores intermedios ($I \in [95, 150]$ en el Dado #2).
+   - Si se usara Otsu local sobre el recorte ($T_{\text{Otsu}} \approx 125\text{–}127$), incluiría sombras del plástico lateral del dado. El valor `90` se ubica en el valle limpio entre la tinta negra ($<70$) y las sombras/plástico ($>100$), aislando exclusivamente los puntos negros (y el fondo oscuro exterior en el Dado #1, que luego elimina `imclearborder`).
+2. **¿De dónde salen `RHO_PIP_TH` y `AREA_PIP_MIN` (y cómo hacerlos invariantes)?**
+   - `RHO_PIP_TH = 0.80`: proviene del criterio de circularidad de la cátedra (`clasifico_celulas.py`, Unidad 7). Como $\rho = 4\pi A / P^2$ es **adimensional**, ya es naturalmente invariante a la resolución y escala. Separa perfectamente los puntos circulares de la cara superior ($\rho \in [0.871, 0.900]$) de las elipses alargadas de las caras laterales ($\rho \in [0.550, 0.590]$).
+   - `AREA_PIP_MIN` y el filtro de área mínima de cara superior (`1200.0` original): se calculan **dinámicamente respecto del área del propio dado `d["area"]`**:
+     - `area_pip_min = max(20.0, 0.0015 * d["area"])` ($\approx 100\text{–}112\text{ px}^2$ en `monedas.jpg`, filtra motas residuales).
+     - `area_pip_top_min = 0.017 * d["area"]` ($\approx 1\,132\text{–}1\,266\text{ px}^2$ en `monedas.jpg`, separa los puntos superiores de $\sim 2.6\text{–}3.2\%$ del dado frente a los laterales de $\sim 0.85\%$, de forma completamente independiente de la resolución de la imagen).
+
+---
+
+### 5.4. Invarianza a Traslación, Rotación y Cambios de Escala
+* **Invarianza a Traslación:**
+  - Todas las operaciones espaciales (`medianBlur`, `Sobel`, `MORPH_CLOSE`, `MORPH_OPEN`) son **convoluciones/filtros locales invariantes al desplazamiento**.
+  - `imfillhole` parte de `(0, 0)` sobre un marco perimetral anulado, por lo que rellena cualquier objeto sin importar en qué posición `(x, y)` de la mesa se encuentre (salvo que toque el borde de la foto).
+  - Los descriptores `Area`, `Perímetro`, `Fp` y `rho` dependen únicamente de la geometría del contorno, no de su centroide `(cx, cy)`.
+* **Invarianza a Rotación:**
+  - La magnitud euclídea del gradiente $\|\nabla I\| = \sqrt{G_x^2 + G_y^2}$ es **isotrópica** (invariante a la orientación del borde).
+  - Todos los elementos estructurantes morfológicos son `MORPH_ELLIPSE` (discos circulares isotrópicos), evitando sesgos direccionales.
+  - `Area`, `Perímetro`, `Fp` y `rho = 4πA/P²` son **invariantes a rotación**.
+  - En `analizar_dados()`, `imclearborder` sobre el recorte `bbox` elimina el fondo exterior cualquiera sea el ángulo del dado.
+* **Invarianza a Cambios de Escala (Resolución):**
+  - Todos los tamaños de kernel y umbrales de área se calculan **proporcionalmente** a la dimensión de la imagen (`dim_min = min(H, W)`) o del objeto (`d["area"]`):
+    - `k_med`, `pad_borde`, `k_close`, `k_open` escalan con `dim_min` (dando `11`, `10`, `15`, `31` en `3871×2681`).
+    - `AREA_MIN = 0.0014 * H * W` escala con el área total de la imagen.
+    - `k_opt` se selecciona dinámicamente mediante estabilidad morfológica sobre el gradiente.
+    - `UMBRAL_AREA_10C_1P` y `UMBRAL_AREA_1P_50C` se calculan dinámicamente por **máxima separación 1D** entre las áreas detectadas.
+    - En `analizar_dados()`, `k_close_pip`, `k_open_pip`, `area_pip_min` y `area_pip_top_min` escalan con `d["area"]` del propio dado, y `RHO_PIP_TH = 0.80` es adimensional.
