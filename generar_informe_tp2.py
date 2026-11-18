@@ -144,9 +144,9 @@ def generar_pdf(out_pdf):
 
     with PdfPages(out_pdf) as pdf:
         # =====================================================================
-        # PÁGINA 1: PORTADA / RESUMEN Y PROBLEMA 1 (PUNTO A)
+        # PÁGINA 1: PORTADA / RESUMEN, PUNTO A Y HISTOGRAMA DE grad_u8
         # =====================================================================
-        fig1, ax1 = nueva_pagina("Problema 1: Monedas y Dados (Punto A)", 1, 6)
+        fig1, ax1 = nueva_pagina("Problema 1: Monedas y Dados (Punto A)", 1, 7)
 
         # Bloque de título principal
         ax1.add_patch(FancyBboxPatch(
@@ -203,9 +203,9 @@ def generar_pdf(out_pdf):
         pasos_p1a = [
             "• Etapa 1 (Filtrado Espacial No Lineal - U2): Conversión a gris y filtro de mediana 11x11 (cv2.medianBlur) para atenuar la rugosidad del tablero sin difuminar los bordes.",
             "• Etapa 2 (Operador Diferencial de Sobel - U3): Cálculo de la magnitud exacta del gradiente ||G|| = sqrt(Gx^2 + Gy^2) con kernels 3x3 (cv2.Sobel), eliminando el sesgo de iluminación.",
-            "• Etapa 3 (Umbralado Estadístico Automático - U3): Binarización del gradiente en T = round(media + 0.9*desv) = 20.0, obteniendo los anillos de contorno de los 19 objetos.",
+            "• Etapa 3 (Umbralado Estadístico Dinámico - U3): Como el histograma de grad_u8 es fuertemente asimétrico a la derecha (masa en 0 y cola de bordes), Otsu falla (T=65). Se barre k en [0.5, 1.5] para T = round(media + k*desv), eligiendo el mayor k que maximiza objetos cerrados válidos (k=0.9 -> T=20.0).",
             "• Etapa 4 (Clausura + Reconstrucción Geodésica - U6): Clausura con elipse 15x15 seguida de rellenado de huecos (imfillhole, PI_U6_Morfologico_p2_Reconstruccion.py) y apertura 31x31.",
-            "• Etapa 5 (Separación Moneda vs. Dado por Factor de Forma - U7 y Factor de Forma.txt): Para cada contorno se calcula Fp = Área / Perímetro^2 y la circularidad normalizada rho = 4*pi*Fp.",
+            "• Etapa 5 (Separación Moneda vs. Dado por Factor de Forma - U7 y Factor de Forma.txt): Filtro por área mínima dinámica (0.14% de HxW ~ 14,529 px^2) y cálculo de Fp = Área/Perímetro^2 y rho = 4*pi*Fp.",
             "  Un círculo perfecto cumple Fp = 1/(4*pi) = 0.0796 (1/Fp = 12.57, rho = 1.00) y un cuadrado cumple Fp = 1/16 = 0.0625 (1/Fp = 16.00, rho = 0.785). Empleando el umbral de cátedra",
             "  RHO_TH = 0.80 (clasifico_celulas.py), el sistema separa con 100% de exactitud las 17 Monedas (rho en [0.8056, 0.8904]) de los 2 Dados (rho = 0.7742 y rho = 0.6590).",
         ]
@@ -214,9 +214,9 @@ def generar_pdf(out_pdf):
 
         insertar_imagen(
             fig1,
-            os.path.join(dir_p1, "p1_puntoA_etapas_segmentacion.png"),
-            [0.048, 0.058, 0.904, 0.435],
-            "Figura 1.1 (Punto A): Evolución paso a paso del preprocesamiento, gradiente de Sobel, morfología (imfillhole) y segmentación de las 17 monedas y 2 dados.",
+            os.path.join(dir_p1, "p1_puntoA_histograma_y_umbrales.png"),
+            [0.048, 0.058, 0.904, 0.430],
+            "Figura 1.1 (Punto A): Histograma logarítmico de grad_u8, barrido dinámico de k y comparación visual entre umbral menor (k=0.2), óptimo (k=0.9) y mayor (k=2.5).",
             ax1, 7.6
         )
 
@@ -224,9 +224,25 @@ def generar_pdf(out_pdf):
         plt.close(fig1)
 
         # =====================================================================
-        # PÁGINA 2: PROBLEMA 1 — PUNTO B (CLASIFICACIÓN DE MONEDAS Y TABLA)
+        # PÁGINA 2: PROBLEMA 1 — PUNTO A (ETAPAS DE SEGMENTACIÓN EN 2 COLS x 4 FILAS)
         # =====================================================================
-        fig2, ax2 = nueva_pagina("Problema 1: Clasificación de Monedas (Punto B)", 2, 6)
+        fig1_etapas, ax1_etapas = nueva_pagina("Problema 1: Etapas de Segmentación (Punto A)", 2, 7)
+        y_et = 132.5
+        y_et = subtitulo_caja(ax1_etapas, y_et, "1.2.1. VISUALIZACIÓN DETALLADA DE LAS 8 ETAPAS DE SEGMENTACIÓN (2 COLUMNAS x 4 FILAS)")
+        insertar_imagen(
+            fig1_etapas,
+            os.path.join(dir_p1, "p1_puntoA_etapas_segmentacion.png"),
+            [0.08, 0.075, 0.84, 0.825],
+            "Figura 1.2 (Punto A): Evolución paso a paso del preprocesamiento, gradiente de Sobel, umbralado dinámico, morfología (imfillhole) y segmentación de las 17 monedas y 2 dados.",
+            ax1_etapas, 7.6
+        )
+        pdf.savefig(fig1_etapas)
+        plt.close(fig1_etapas)
+
+        # =====================================================================
+        # PÁGINA 3: PROBLEMA 1 — PUNTO B (CLASIFICACIÓN DE MONEDAS Y TABLA)
+        # =====================================================================
+        fig2, ax2 = nueva_pagina("Problema 1: Clasificación de Monedas (Punto B)", 3, 7)
 
         y = 132.5
         y = subtitulo_caja(ax2, y, "1.3. PUNTO B: CLASIFICACIÓN GRANULOMÉTRICA Y CONTEO AUTOMÁTICO DE MONEDAS")
@@ -261,7 +277,7 @@ def generar_pdf(out_pdf):
             fig2,
             os.path.join(dir_p1, "p1_puntoB_clasificacion_monedas.png"),
             [0.048, 0.445, 0.904, 0.315],
-            "Figura 1.2 (Punto B): Izquierda: Mapa de clasificación y conteo por denominación. Derecha: Espacio de descriptores Área vs. Circularidad (rho).",
+            "Figura 1.3 (Punto B): Izquierda: Mapa de clasificación y conteo por denominación. Derecha: Espacio de descriptores Área vs. Circularidad (rho).",
             ax2, 61.8
         )
 
@@ -301,7 +317,7 @@ def generar_pdf(out_pdf):
         # =====================================================================
         # PÁGINA 3: PROBLEMA 1 (PUNTO C) Y PROBLEMA 2 (PLANTEO Y PUNTO A)
         # =====================================================================
-        fig3, ax3 = nueva_pagina("Problema 1 (Punto C) y Problema 2 (Punto A)", 3, 6)
+        fig3, ax3 = nueva_pagina("Problema 1 (Punto C) y Problema 2 (Punto A)", 4, 7)
 
         y = 132.5
         y = subtitulo_caja(ax3, y, "1.4. PUNTO C: DETERMINACIÓN DEL VALOR DE LA CARA SUPERIOR DE CADA DADO")
@@ -330,7 +346,7 @@ def generar_pdf(out_pdf):
             fig3,
             os.path.join(dir_p1, "p1_puntoC_analisis_dados.png"),
             [0.048, 0.420, 0.904, 0.285],
-            "Figura 1.3 (Punto C): Etapas de aislamiento (umbralado inverso, imclearborder, clausura+apertura) y filtrado por Factor de Forma de la cara superior de cada dado.",
+            "Figura 1.4 (Punto C): Etapas de aislamiento (umbralado inverso, imclearborder, clausura+apertura) y filtrado por Factor de Forma de la cara superior de cada dado.",
             ax3, 59.0
         )
 
@@ -382,7 +398,7 @@ def generar_pdf(out_pdf):
         # =====================================================================
         # PÁGINA 4: FIGURAS DEL PUNTO A (PIPELINE DETALLADO Y MOSAICO 12 IMÁGENES)
         # =====================================================================
-        fig4, ax4 = nueva_pagina("Problema 2: Detección de Patentes (Punto A)", 4, 6)
+        fig4, ax4 = nueva_pagina("Problema 2: Detección de Patentes (Punto A)", 5, 7)
 
         y = 132.5
         y = subtitulo_caja(ax4, y, "2.2.1. ETAPAS INTERMEDIAS DE PROCESAMIENTO Y DETECCIÓN EN LAS 12 IMÁGENES (PUNTO A)")
@@ -409,7 +425,7 @@ def generar_pdf(out_pdf):
         # =====================================================================
         # PÁGINA 5: PROBLEMA 2 — PUNTO B (SEGMENTACIÓN DE CARACTERES INDIVIDUALES)
         # =====================================================================
-        fig5, ax5 = nueva_pagina("Problema 2: Segmentación de Caracteres (Punto B)", 5, 6)
+        fig5, ax5 = nueva_pagina("Problema 2: Segmentación de Caracteres (Punto B)", 6, 7)
 
         y = 132.5
         y = subtitulo_caja(ax5, y, "2.3. PUNTO B: ALGORITMO DE SEGMENTACIÓN DE CARACTERES INDIVIDUALES")
@@ -456,7 +472,7 @@ def generar_pdf(out_pdf):
         # =====================================================================
         # PÁGINA 6: TABLA CUANTITATIVA DEL PROBLEMA 2, CASO INCLINADO Y CONCLUSIONES
         # =====================================================================
-        fig6, ax6 = nueva_pagina("Resultados Cuantitativos y Conclusiones", 6, 6)
+        fig6, ax6 = nueva_pagina("Resultados Cuantitativos y Conclusiones", 7, 7)
 
         y = 132.5
         y = subtitulo_caja(ax6, y, "2.4. REPORTE CUANTITATIVO DE LAS 12 PATENTES Y CASO CON INCLINACIÓN (img04.png)")
