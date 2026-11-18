@@ -116,12 +116,24 @@ def imclearborder(f, conn=8):
 # PUNTO A: DETECCIÓN AUTOMÁTICA Y SEGMENTACIÓN DE LA PATENTE
 # =============================================================================
 
-def filtrar_candidatos_caracter(bw_mask):
+def _impar(val, minimo=3):
+    v = max(minimo, int(round(val)))
+    return v if v % 2 == 1 else v + 1
+
+
+def filtrar_candidatos_caracter(bw_mask, scale_f=1.0):
     """
     Extrae las componentes conectadas de una máscara binaria y filtra aquellas
     que verifican las restricciones geométricas de un carácter de patente
     según `info_patentes.txt` (Relación Alto/Ancho ~ 1.5 - 3.0 y escala plausible).
+    Los límites en píxeles escalan con `scale_f = min(H, W) / 360.0` (invarianza a escala).
     """
+    h_min = max(5.0, 9.0 * scale_f)
+    h_max = 30.0 * scale_f
+    w_min = max(2.0, 3.0 * scale_f)
+    w_max = 20.0 * scale_f
+    area_min = max(6.0, 15.0 * (scale_f ** 2))
+
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bw_mask, connectivity=8)
     candidatos = []
     for i in range(1, num_labels):
@@ -131,7 +143,7 @@ def filtrar_candidatos_caracter(bw_mask):
         solidity = area / float(w * h) if (w * h) > 0 else 0.0
         # Regla 1 (info_patentes.txt): Relación Alto/Ancho de cada carácter ~ 1.5 a 3.0
         # Se admite el intervalo [1.25, 3.5] para contemplar perspectiva y caracteres como '1' o 'M'/'Q'.
-        if 9 <= h <= 30 and 3 <= w <= 20 and 1.25 <= aspect <= 3.5 and area >= 15:
+        if h_min <= h <= h_max and w_min <= w <= w_max and 1.25 <= aspect <= 3.5 and area >= area_min:
             candidatos.append({
                 "label": i,
                 "x": int(x),
@@ -169,8 +181,8 @@ def buscar_constelacion_patente(candidatos):
                 c1, c2, c3 = candidatos[i], candidatos[j], candidatos[k]
                 hs = np.array([c1["h"], c2["h"], c3["h"]], dtype=np.float64)
                 h_mean = float(np.mean(hs))
-                # Uniformidad de altura entre los 3 caracteres del grupo
-                if np.max(np.abs(hs - h_mean)) > 3.5:
+                # Uniformidad de altura proporcional a h_mean (invariante a escala)
+                if np.max(np.abs(hs - h_mean)) > max(2.0, 0.22 * h_mean):
                     continue
 
                 dx1 = c2["cx"] - c1["cx"]
@@ -199,8 +211,9 @@ def buscar_constelacion_patente(candidatos):
             c1, c2, c3, h1, dx1, dy1 = t1
             c4, c5, c6, h2, dx2, dy2 = t2
 
-            # Consistencia de altura entre ambos grupos de 3 caracteres
-            if abs(h1 - h2) > 3.5:
+            # Consistencia de altura entre ambos grupos de 3 caracteres (invariante a escala)
+            h_prom = 0.5 * (h1 + h2)
+            if abs(h1 - h2) > max(2.0, 0.22 * h_prom):
                 continue
 
             dx_intra = 0.5 * (dx1 + dx2)
@@ -210,10 +223,10 @@ def buscar_constelacion_patente(candidatos):
             if not (1.25 * dx_intra <= dx_central <= 2.80 * dx_intra):
                 continue
 
-            # Colinealidad entre el primer y segundo grupo de 3 caracteres
+            # Colinealidad entre el primer y segundo grupo de 3 caracteres (invariante a escala)
             dy_central = c4["cy"] - c3["cy"]
             dy_esperado = dy1 * (dx_central / max(dx_intra, 1.0))
-            if abs(dy_central - dy_esperado) > 4.0:
+            if abs(dy_central - dy_esperado) > max(2.0, 0.25 * h_prom):
                 continue
 
             grupo_6 = [c1, c2, c3, c4, c5, c6]
@@ -241,10 +254,13 @@ def detectar_y_segmentar_patente(img_bgr):
            proporcional a la altura media de los caracteres y recorte (ROI).
     """
     H, W = img_bgr.shape[:2]
+    scale_f = float(min(H, W)) / 360.0
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
-    # Etapa 2: Transformada Top-Hat en niveles de gris (Unidad 6)
-    se_tophat = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 9))
+    # Etapa 2: Transformada Top-Hat en niveles de gris con EE proporcional a la escala (Unidad 6)
+    kw_th = _impar(21.0 * scale_f, minimo=5)
+    kh_th = _impar(9.0 * scale_f, minimo=3)
+    se_tophat = cv2.getStructuringElement(cv2.MORPH_RECT, (kw_th, kh_th))
     tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, se_tophat)
 
     # Etapa 3: Evaluación multiumbral sobre Top-Hat guiada por descriptores (Unidades 3 y 7)
@@ -253,7 +269,7 @@ def detectar_y_segmentar_patente(img_bgr):
 
     for th in range(35, 165, 5):
         _, bw = cv2.threshold(tophat, th, 255, cv2.THRESH_BINARY)
-        candidatos, labels = filtrar_candidatos_caracter(bw)
+        candidatos, labels = filtrar_candidatos_caracter(bw, scale_f=scale_f)
         grupo_6, puntaje, tripletes = buscar_constelacion_patente(candidatos)
 
         if grupo_6 is not None and puntaje > mejor_puntaje_global:
@@ -289,6 +305,7 @@ def detectar_y_segmentar_patente(img_bgr):
     recorte_gray = gray[py1:py2, px1:px2].copy()
 
     etapas_puntoA = {
+        "scale_f": scale_f,
         "gray": gray,
         "tophat": tophat,
         "th_optimo": mejor_resultado["th_optimo"],
@@ -308,15 +325,16 @@ def detectar_y_segmentar_patente(img_bgr):
 # PUNTO B: SEGMENTACIÓN DE LOS CARACTERES INDIVIDUALES DE LA PATENTE
 # =============================================================================
 
-def segmentar_caracteres_patente(recorte_bgr):
+def segmentar_caracteres_patente(recorte_bgr, scale_f=1.0):
     """
     PUNTO B:
     A partir únicamente de la patente segmentada en el Punto A (`recorte_bgr`),
     implementa un algoritmo de procesamiento para segmentar los 6 caracteres
     individuales:
         1. Conversión del recorte de la patente a escala de grises.
-        2. Realce local mediante Transformada Top-Hat (`21x9`) para uniformizar
-           el fondo de la placa frente a sombras o reflejos oblicuos.
+        2. Realce local mediante Transformada Top-Hat proporcional a la escala
+           (`21x9` en 640x360) para uniformizar el fondo de la placa frente a
+           sombras o reflejos oblicuos.
         3. Umbralado + Limpieza de bordes por reconstrucción morfológica
            (`imclearborder`, Unidad 6) para suprimir el marco blanco perimetral
            de la patente Argentina que toca los bordes del recorte.
@@ -327,8 +345,10 @@ def segmentar_caracteres_patente(recorte_bgr):
     hc, wc = recorte_bgr.shape[:2]
     plate_gray = cv2.cvtColor(recorte_bgr, cv2.COLOR_BGR2GRAY)
 
-    # Top-Hat sobre la patente recortada
-    se_plate = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 9))
+    # Top-Hat sobre la patente recortada con EE proporcional a la escala de imagen
+    kw_p = _impar(21.0 * scale_f, minimo=5)
+    kh_p = _impar(9.0 * scale_f, minimo=3)
+    se_plate = cv2.getStructuringElement(cv2.MORPH_RECT, (kw_p, kh_p))
     plate_tophat = cv2.morphologyEx(plate_gray, cv2.MORPH_TOPHAT, se_plate)
 
     # Umbral de Otsu de referencia sobre el Top-Hat del recorte
@@ -337,6 +357,7 @@ def segmentar_caracteres_patente(recorte_bgr):
     # Búsqueda del umbral óptimo que desconecta limpiamente los 6 caracteres del marco
     mejor_config = None
     mejor_score = -1e9
+    area_char_min = max(6.0, 15.0 * (scale_f ** 2))
 
     for th in range(30, 180, 5):
         _, bw_raw = cv2.threshold(plate_tophat, th, 255, cv2.THRESH_BINARY)
@@ -349,7 +370,7 @@ def segmentar_caracteres_patente(recorte_bgr):
             x, y, w, h, area = stats[i]
             cx, cy = centroids[i]
             aspect = h / float(w) if w > 0 else 0.0
-            if 0.35 * hc <= h <= 0.92 * hc and 1.25 <= aspect <= 3.5 and area >= 15:
+            if 0.35 * hc <= h <= 0.92 * hc and 1.25 <= aspect <= 3.5 and area >= area_char_min:
                 comps.append({
                     "label": i,
                     "x": int(x),
@@ -365,7 +386,8 @@ def segmentar_caracteres_patente(recorte_bgr):
         comps = sorted(comps, key=lambda c: c["x"])
         if len(comps) == 6:
             hs = [c["h"] for c in comps]
-            if max(hs) - min(hs) <= 4:
+            h_mean_c = float(np.mean(hs))
+            if max(hs) - min(hs) <= max(2.5, 0.25 * h_mean_c):
                 score = sum(c["area"] for c in comps) - 10.0 * np.std(hs)
                 if score > mejor_score:
                     mejor_score = score
@@ -713,7 +735,7 @@ def main():
         res_A = detectar_y_segmentar_patente(img_bgr)
 
         # Punto B: Segmentación de los 6 caracteres individuales a partir del recorte del Punto A
-        res_B = segmentar_caracteres_patente(res_A["recorte_bgr"])
+        res_B = segmentar_caracteres_patente(res_A["recorte_bgr"], scale_f=res_A["scale_f"])
 
         px, py, pw, ph = res_A["bbox_patente"]
         alturas_str = ",".join(str(c["h"]) for c in res_B["caracteres"])
