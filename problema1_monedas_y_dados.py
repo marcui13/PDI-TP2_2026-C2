@@ -105,6 +105,18 @@ def segmentar_objetos(img_bgr):
     """
     # 1. Conversión a escala de grises (Unidad 1 / Unidad 5)
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    h_img, w_img = gray.shape
+    dim_min = float(min(h_img, w_img))
+
+    def _impar(val, minimo=3):
+        v = max(minimo, int(round(val)))
+        return v if v % 2 == 1 else v + 1
+
+    # Tamaños de filtro y EE proporcionales a la resolución (invarianza a escala)
+    k_med = _impar(dim_min * 0.0041, minimo=3)     # 11 en 3871x2681
+    pad_borde = max(3, int(round(dim_min * 0.0037)))  # 10 px en 3871x2681
+    k_close = _impar(dim_min * 0.0056, minimo=3)   # 15 en 3871x2681
+    k_open = _impar(dim_min * 0.0115, minimo=5)    # 31 en 3871x2681
 
     # Demostración de por qué falla el umbralado global directo sobre fondo no uniforme
     th_otsu_global, bw_otsu_global = cv2.threshold(
@@ -113,7 +125,7 @@ def segmentar_objetos(img_bgr):
 
     # 2. Filtrado espacial de mediana para eliminar ruido impulsivo y textura del fondo
     #    preservando los bordes de las monedas y dados (Unidad 2)
-    gray_med = cv2.medianBlur(gray, 11)
+    gray_med = cv2.medianBlur(gray, k_med)
 
     # 3. Magnitud exacta del Gradiente de Sobel (Unidad 3: PDI_U3_Segmentacion.py)
     #    La derivada espacial suprime el gradiente suave de iluminación del fondo
@@ -122,25 +134,50 @@ def segmentar_objetos(img_bgr):
     grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
     grad_u8 = np.uint8(np.clip(grad_mag, 0, 255))
 
-    # Anulamos artefactos de borde de 10 px para garantizar semilla limpia en (0, 0)
-    grad_u8[:10, :] = 0
-    grad_u8[-10:, :] = 0
-    grad_u8[:, :10] = 0
-    grad_u8[:, -10:] = 0
+    # Anulamos artefactos de borde proporcionalmente para garantizar semilla limpia en (0, 0)
+    grad_u8[:pad_borde, :] = 0
+    grad_u8[-pad_borde:, :] = 0
+    grad_u8[:, :pad_borde] = 0
+    grad_u8[:, -pad_borde:] = 0
 
-    # 4. Umbralado estadístico automático del gradiente (Media + 0.9 * Desvío Estándar)
-    th_grad = float(np.round(grad_u8.mean() + 0.9 * grad_u8.std()))
+    # 4. Umbralado estadístico dinámico del gradiente: th_grad = round(mu + k_opt * sigma)
+    #    Barrido sobre k en [0.5, 1.5] para elegir el mayor k que maximiza la cantidad
+    #    de componentes cerradas válidas tras clausura + imfillhole + apertura.
+    AREA_MIN = max(500.0, 0.0014 * float(h_img * w_img))  # ~0.14% del área total (~14,529 px^2 en 3871x2681)
+
+    se_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_close, k_close))
+    se_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
+
+    grad_mean = float(grad_u8.mean())
+    grad_std = float(grad_u8.std())
+
+    sweep_k = []
+    best_count = -1
+    k_opt = 0.9
+    for k_cand in np.round(np.arange(0.5, 1.55, 0.1), 2):
+        t_cand = float(np.round(grad_mean + k_cand * grad_std))
+        _, bw_e = cv2.threshold(grad_u8, t_cand, 255, cv2.THRESH_BINARY)
+        bw_c = cv2.morphologyEx(bw_e, cv2.MORPH_CLOSE, se_close)
+        bw_f = imfillhole(bw_c)
+        bw_m = cv2.morphologyEx(bw_f, cv2.MORPH_OPEN, se_open)
+        n_lbl, _, st, _ = cv2.connectedComponentsWithStats(bw_m)
+        valid_cnt = sum(1 for idx_lbl in range(1, n_lbl) if st[idx_lbl, cv2.CC_STAT_AREA] >= AREA_MIN)
+        sweep_k.append({"k": float(k_cand), "th": t_cand, "valid_count": int(valid_cnt)})
+        # En empate de máximo número de objetos, elegimos el mayor k (bordes más limpios sin abrir contornos)
+        if valid_cnt >= best_count:
+            best_count = valid_cnt
+            k_opt = float(k_cand)
+
+    th_grad = float(np.round(grad_mean + k_opt * grad_std))
     _, bw_edges = cv2.threshold(grad_u8, th_grad, 255, cv2.THRESH_BINARY)
 
     # 5. Clausura morfológica para conectar micro-cortes en el perímetro (Unidad 6)
-    se_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
     bw_closed = cv2.morphologyEx(bw_edges, cv2.MORPH_CLOSE, se_close)
 
     # 6. Rellenado morfológico de huecos internos (Unidad 6: imfillhole)
     bw_filled = imfillhole(bw_closed)
 
     # 7. Apertura morfológica para suavizar contornos y eliminar ruido aislado (Unidad 6)
-    se_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
     bw_mask = cv2.morphologyEx(bw_filled, cv2.MORPH_OPEN, se_open)
 
     # 8. Extracción de componentes conexas y separación Monedas vs Dados por Factor de Forma
@@ -150,7 +187,6 @@ def segmentar_objetos(img_bgr):
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bw_mask)
 
     RHO_TH = 0.80       # Umbral de circularidad de cátedra (clasifico_celulas.py)
-    AREA_MIN = 15000    # Descarte de posibles restos menores
 
     objetos = []
     monedas = []
@@ -208,6 +244,14 @@ def segmentar_objetos(img_bgr):
         "th_otsu_global": th_otsu_global,
         "gray_med": gray_med,
         "grad_u8": grad_u8,
+        "grad_mean": grad_mean,
+        "grad_std": grad_std,
+        "k_med": k_med,
+        "k_close": k_close,
+        "k_open": k_open,
+        "k_opt": k_opt,
+        "sweep_k": sweep_k,
+        "area_min": AREA_MIN,
         "th_grad": th_grad,
         "bw_edges": bw_edges,
         "bw_closed": bw_closed,
@@ -242,8 +286,19 @@ def clasificar_monedas(monedas):
         "50 Centavos": 0.50,
     }
 
-    UMBRAL_AREA_10C_1P = 80000.0
-    UMBRAL_AREA_1P_50C = 102000.0
+    # Cálculo dinámico de los umbrales de área (criterio de máxima separación en 1D):
+    # Se ordenan las áreas de menor a mayor, se calculan los saltos consecutivos
+    # y se ubican los umbrales en el punto medio de los dos mayores saltos inter-clase.
+    areas_ord = sorted(m["area"] for m in monedas)
+    if len(areas_ord) >= 3:
+        diffs = np.diff(areas_ord)
+        top2_idx = sorted(np.argsort(diffs)[-2:])
+        i1, i2 = int(top2_idx[0]), int(top2_idx[1])
+        UMBRAL_AREA_10C_1P = float((areas_ord[i1] + areas_ord[i1 + 1]) / 2.0)
+        UMBRAL_AREA_1P_50C = float((areas_ord[i2] + areas_ord[i2 + 1]) / 2.0)
+    else:
+        UMBRAL_AREA_10C_1P = 80000.0
+        UMBRAL_AREA_1P_50C = 102000.0
 
     monto_total = 0.0
     for idx, m in enumerate(monedas, 1):
@@ -292,13 +347,25 @@ def analizar_dados(img_bgr, gray, dados):
          elipses alargadas: rho <= 0.80 (Fp ~ 0.045, 1/Fp ~ 22.0) y Área ~ 630 px^2.
     """
     RHO_PIP_TH = 0.80
-    AREA_PIP_MIN = 100.0
 
-    se_close_pip = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    se_open_pip = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    def _impar_pip(val, minimo=3):
+        v = max(minimo, int(round(val)))
+        return v if v % 2 == 1 else v + 1
 
     suma_total_dados = 0
     for idx, d in enumerate(dados, 1):
+        # Umbrales de área y kernels morfológicos dinámicos proporcionales al dado (invariantes a escala):
+        # - Ruido residual: < 0.15% del área del dado (~100 px^2 en monedas.jpg)
+        # - Pips de cara superior: ~2.6%-3.2% del área del dado vs laterales ~0.85% -> corte en 1.7% (~1130-1265 px^2)
+        l_dado = float(np.sqrt(d["area"]))
+        k_close_pip = _impar_pip(l_dado * 0.034, minimo=3)  # 9 en monedas.jpg
+        k_open_pip = _impar_pip(l_dado * 0.019, minimo=3)   # 5 en monedas.jpg
+        se_close_pip = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_close_pip, k_close_pip))
+        se_open_pip = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open_pip, k_open_pip))
+
+        area_pip_min = max(20.0, 0.0015 * d["area"])
+        area_pip_top_min = 0.017 * d["area"]
+
         x, y, w, h = d["bbox"]
         crop_rgb = cv2.cvtColor(img_bgr[y:y+h, x:x+w], cv2.COLOR_BGR2RGB)
         crop_gray = gray[y:y+h, x:x+w]
@@ -321,7 +388,7 @@ def analizar_dados(img_bgr, gray, dados):
 
         for c_pip in cnts_pips:
             a_pip = float(cv2.contourArea(c_pip))
-            if a_pip < AREA_PIP_MIN:
+            if a_pip < area_pip_min:
                 continue
             p_pip = float(cv2.arcLength(c_pip, True))
             fp_pip = a_pip / (p_pip ** 2)
@@ -332,7 +399,7 @@ def analizar_dados(img_bgr, gray, dados):
             cx_p = float(M["m10"] / M["m00"]) if M["m00"] > 0 else 0.0
             cy_p = float(M["m01"] / M["m00"]) if M["m00"] > 0 else 0.0
 
-            es_cara_superior = (rho_pip > RHO_PIP_TH) and (a_pip > 1200.0)
+            es_cara_superior = (rho_pip > RHO_PIP_TH) and (a_pip > area_pip_top_min)
             pip_info = {
                 "cnt": c_pip,
                 "area": a_pip,
@@ -382,30 +449,31 @@ def generar_figuras_problema1(img_bgr, objetos, monedas, dados, etapas, resumen_
 
     # -------------------------------------------------------------------------
     # FIGURA 1 (PUNTO A): Tubería de Preprocesamiento y Segmentación Morfológica
+    # (Disposición en 4 filas x 2 columnas para mayor tamaño y detalle visual)
     # -------------------------------------------------------------------------
-    fig1, axes1 = plt.subplots(2, 4, figsize=(18, 9.5))
+    fig1, axes1 = plt.subplots(4, 2, figsize=(13, 18.5))
     axes1 = axes1.flatten()
 
     axes1[0].imshow(img_rgb)
-    axes1[0].set_title("1. Imagen Original (monedas.jpg)\nFondo de intensidad no uniforme", fontsize=10, fontweight="bold")
+    axes1[0].set_title("1. Imagen Original (monedas.jpg)\nFondo de intensidad no uniforme", fontsize=11, fontweight="bold")
 
     axes1[1].imshow(etapas["bw_otsu_global"], cmap="gray")
-    axes1[1].set_title(f"2. Falla de Otsu Global Directo (T={etapas['th_otsu_global']:.0f})\nEl gradiente de iluminación satura la derecha", fontsize=10, fontweight="bold")
+    axes1[1].set_title(f"2. Falla de Otsu Global Directo (T={etapas['th_otsu_global']:.0f})\nEl gradiente de iluminación satura la derecha", fontsize=11, fontweight="bold")
 
     axes1[2].imshow(etapas["gray_med"], cmap="gray")
-    axes1[2].set_title("3. Escala de Grises + Filtro Mediana (11x11)\nAtenuación de textura preservando bordes", fontsize=10, fontweight="bold")
+    axes1[2].set_title(f"3. Escala de Grises + Filtro Mediana ({etapas['k_med']}x{etapas['k_med']})\nAtenuación de textura preservando bordes", fontsize=11, fontweight="bold")
 
     axes1[3].imshow(etapas["grad_u8"], cmap="gray")
-    axes1[3].set_title("4. Magnitud del Gradiente de Sobel\nInvariante a la iluminación no uniforme", fontsize=10, fontweight="bold")
+    axes1[3].set_title("4. Magnitud del Gradiente de Sobel\nInvariante a la iluminación no uniforme", fontsize=11, fontweight="bold")
 
     axes1[4].imshow(etapas["bw_edges"], cmap="gray")
-    axes1[4].set_title(f"5. Umbralado del Gradiente (T={etapas['th_grad']:.0f})\nBordes binarios de monedas y dados", fontsize=10, fontweight="bold")
+    axes1[4].set_title(f"5. Umbralado Dinámico del Gradiente (T={etapas['th_grad']:.0f}, k={etapas['k_opt']:.1f})\nBordes binarios de monedas y dados", fontsize=11, fontweight="bold")
 
     axes1[5].imshow(etapas["bw_closed"], cmap="gray")
-    axes1[5].set_title("6. Clausura Morfológica (Elipse 15x15)\nCierre de brechas en contornos exteriores", fontsize=10, fontweight="bold")
+    axes1[5].set_title(f"6. Clausura Morfológica (Elipse {etapas['k_close']}x{etapas['k_close']})\nCierre de brechas en contornos exteriores", fontsize=11, fontweight="bold")
 
     axes1[6].imshow(etapas["bw_mask"], cmap="gray")
-    axes1[6].set_title("7. Rellenado (imfillhole) + Apertura (31x31)\nMáscara binaria sólida de los 19 objetos", fontsize=10, fontweight="bold")
+    axes1[6].set_title(f"7. Rellenado (imfillhole) + Apertura ({etapas['k_open']}x{etapas['k_open']})\nMáscara binaria sólida de los 19 objetos", fontsize=11, fontweight="bold")
 
     # Visualización de Monedas vs Dados por Factor de Forma
     vis_seg = img_rgb.copy()
@@ -418,15 +486,87 @@ def generar_figuras_problema1(img_bgr, objetos, monedas, dados, etapas, resumen_
         cv2.putText(vis_seg, etiqueta, (cx - 110, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2, cv2.LINE_AA)
 
     axes1[7].imshow(vis_seg)
-    axes1[7].set_title(f"8. Punto A: Segmentación por Factor de Forma\n17 Monedas (rho > 0.80) y 2 Dados (rho <= 0.80)", fontsize=10, fontweight="bold")
+    axes1[7].set_title(f"8. Punto A: Segmentación por Factor de Forma\n17 Monedas (rho > 0.80) y 2 Dados (rho <= 0.80)", fontsize=11, fontweight="bold")
 
     for ax in axes1:
         ax.axis("off")
 
-    plt.suptitle("PROBLEMA 1 - PUNTO A: Segmentación Automática de Monedas y Dados sobre Fondo No Uniforme", fontsize=13, fontweight="bold")
-    plt.tight_layout()
+    plt.suptitle("PROBLEMA 1 - PUNTO A: Segmentación Automática de Monedas y Dados sobre Fondo No Uniforme", fontsize=13.5, fontweight="bold")
+    plt.tight_layout(rect=[0, 0, 1, 0.98])
     fig1_path = os.path.join(out_dir, "p1_puntoA_etapas_segmentacion.png")
     fig1.savefig(fig1_path, dpi=160, bbox_inches="tight")
+
+    # -------------------------------------------------------------------------
+    # FIGURA 1B (PUNTO A): Histograma de grad_u8 y Sensibilidad del Umbral k
+    # -------------------------------------------------------------------------
+    grad_u8 = etapas["grad_u8"]
+    grad_mean = etapas["grad_mean"]
+    grad_std = etapas["grad_std"]
+    k_opt = etapas["k_opt"]
+    th_grad = etapas["th_grad"]
+    area_min = etapas["area_min"]
+
+    th_grad_otsu, _ = cv2.threshold(grad_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    th_grad_tri, _ = cv2.threshold(grad_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_TRIANGLE)
+
+    fig1b = plt.figure(figsize=(16, 9.5))
+    gs1b = fig1b.add_gridspec(2, 6, height_ratios=[1.1, 1.0], hspace=0.35, wspace=0.25)
+
+    # Panel 1: Histograma de grad_u8 (escala logarítmica para ver la cola)
+    ax_hist = fig1b.add_subplot(gs1b[0, :3])
+    hist_vals = cv2.calcHist([grad_u8], [0], None, [256], [0, 256]).flatten()
+    bins_x = np.arange(101)
+    ax_hist.bar(bins_x, hist_vals[:101], width=1.0, color="#64748b", edgecolor="none", alpha=0.85)
+    ax_hist.set_yscale("log")
+    ax_hist.axvline(grad_mean, color="#0284c7", linestyle=":", linewidth=2.0, label=f"Media μ = {grad_mean:.1f}")
+    ax_hist.axvline(th_grad_tri, color="#f59e0b", linestyle="--", linewidth=1.8, label=f"Triangle (T={th_grad_tri:.0f}, ruido)")
+    ax_hist.axvline(th_grad, color="#16a34a", linestyle="-", linewidth=2.5, label=f"Dinámico μ+{k_opt:.1f}σ (T={th_grad:.0f})")
+    ax_hist.axvline(th_grad_otsu, color="#dc2626", linestyle="--", linewidth=1.8, label=f"Otsu sobre grad (T={th_grad_otsu:.0f}, corta bordes)")
+    ax_hist.set_xlim(-1, 100)
+    ax_hist.set_title("Histograma de grad_u8 (escala log) — Distribución asimétrica a la derecha", fontsize=10.5, fontweight="bold")
+    ax_hist.set_xlabel("Magnitud del Gradiente de Sobel (grad_u8)", fontsize=9.5)
+    ax_hist.set_ylabel("Cantidad de píxeles (log)", fontsize=9.5)
+    ax_hist.grid(True, alpha=0.25, which="both")
+    ax_hist.legend(fontsize=8.5, loc="upper right")
+
+    # Panel 2: Barrido dinámico de k vs cantidad de objetos cerrados válidos
+    ax_sweep = fig1b.add_subplot(gs1b[0, 3:])
+    ks = [s["k"] for s in etapas["sweep_k"]]
+    counts = [s["valid_count"] for s in etapas["sweep_k"]]
+    ax_sweep.plot(ks, counts, "-o", color="#1e3a8a", linewidth=2.0, markersize=6)
+    ax_sweep.axvline(k_opt, color="#16a34a", linestyle="--", linewidth=2.0, label=f"k óptimo seleccionado = {k_opt:.1f} (T={th_grad:.0f})")
+    ax_sweep.scatter([k_opt], [max(counts)], color="#16a34a", s=110, zorder=5)
+    ax_sweep.set_title("Cálculo Dinámico de k: Estabilidad Morfológica (Objetos Cerrados Válidos)", fontsize=10.5, fontweight="bold")
+    ax_sweep.set_xlabel("Factor multiplicador k  (T = round(μ + k·σ))", fontsize=9.5)
+    ax_sweep.set_ylabel("Componentes cerradas válidas", fontsize=9.5)
+    ax_sweep.set_ylim(0, max(counts) + 4)
+    ax_sweep.grid(True, alpha=0.25)
+    ax_sweep.legend(fontsize=8.5, loc="lower left")
+
+    # Paneles inferiores: Demostración visual de umbral menor, óptimo y mayor
+    se_c_demo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (etapas["k_close"], etapas["k_close"]))
+    se_o_demo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (etapas["k_open"], etapas["k_open"]))
+    demos = [
+        (0.2, "Umbral MENOR (k=0.2, T={t:.0f})\nRuido fusiona objetos ({n} válidos)", "#f59e0b"),
+        (k_opt, f"Umbral ÓPTIMO (k={k_opt:.1f}, T={{t:.0f}})\nTodos cerrados y separados ({{n}} válidos)", "#16a34a"),
+        (2.5, "Umbral MAYOR (k=2.5, T={t:.0f})\nContornos abiertos, imfillhole falla ({n} válidos)", "#dc2626"),
+    ]
+    for idx_d, (k_val, titulo_tpl, col_borde) in enumerate(demos):
+        ax_d = fig1b.add_subplot(gs1b[1, idx_d * 2:(idx_d + 1) * 2])
+        t_d = float(np.round(grad_mean + k_val * grad_std))
+        _, bw_e_d = cv2.threshold(grad_u8, t_d, 255, cv2.THRESH_BINARY)
+        bw_c_d = cv2.morphologyEx(bw_e_d, cv2.MORPH_CLOSE, se_c_demo)
+        bw_f_d = imfillhole(bw_c_d)
+        bw_m_d = cv2.morphologyEx(bw_f_d, cv2.MORPH_OPEN, se_o_demo)
+        n_d, _, st_d, _ = cv2.connectedComponentsWithStats(bw_m_d)
+        n_valid_d = sum(1 for ii in range(1, n_d) if st_d[ii, cv2.CC_STAT_AREA] >= area_min)
+        ax_d.imshow(bw_m_d, cmap="gray")
+        ax_d.set_title(titulo_tpl.format(t=t_d, n=n_valid_d), fontsize=10, fontweight="bold", color=col_borde)
+        ax_d.axis("off")
+
+    plt.suptitle("PROBLEMA 1 - PUNTO A: Análisis Estadístico de grad_u8 y Efecto del Umbral en la Segmentación", fontsize=13, fontweight="bold")
+    fig1b_path = os.path.join(out_dir, "p1_puntoA_histograma_y_umbrales.png")
+    fig1b.savefig(fig1b_path, dpi=160, bbox_inches="tight")
 
     # -------------------------------------------------------------------------
     # FIGURA 2 (PUNTO B): Clasificación y Conteo Automático de Monedas
@@ -569,7 +709,7 @@ def generar_figuras_problema1(img_bgr, objetos, monedas, dados, etapas, resumen_
     else:
         plt.close("all")
 
-    return [fig1_path, fig2_path, fig3_path]
+    return [fig1_path, fig1b_path, fig2_path, fig3_path]
 
 
 # =============================================================================
@@ -583,7 +723,11 @@ def imprimir_reporte_consola(img_shape, objetos, monedas, dados, etapas, resumen
     print("=" * 88)
     print(f"Dimensiones de la imagen : {img_shape[1]} x {img_shape[0]} px ({img_shape[2]} canales)")
     print(f"Umbral Otsu directo (gris): {etapas['th_otsu_global']:.1f} (falla por fondo de intensidad no uniforme)")
-    print(f"Umbral Gradiente Sobel    : {etapas['th_grad']:.1f} (invariante a la iluminación suave del fondo)")
+    print(
+        f"Umbral Gradiente Sobel    : {etapas['th_grad']:.1f} "
+        f"(dinámico: μ={etapas['grad_mean']:.2f} + {etapas['k_opt']:.1f}·σ={etapas['grad_std']:.2f})"
+    )
+    print(f"Área mínima filtro (AREA_MIN): {etapas['area_min']:.1f} px² (0.14% de H×W)")
 
     print("\n" + "-" * 88)
     print("PUNTO A: SEGMENTACIÓN AUTOMÁTICA DE MONEDAS Y DADOS (Factor de Forma Fp = A / P^2)")
