@@ -49,6 +49,13 @@ import matplotlib.pyplot as plt
 
 
 # =============================================================================
+# CONSTANTES GLOBALES
+# =============================================================================
+
+RHO_TH = 0.80  # Umbral de circularidad normalizada rho = 4*pi*Fp (clasifico_celulas.py)
+
+
+# =============================================================================
 # FUNCIONES MORFOLÓGICAS POR RECONSTRUCCIÓN (UNIDAD 6)
 # =============================================================================
 
@@ -216,8 +223,6 @@ def segmentar_objetos(img_bgr):
     #    rho = 4 * pi * Fp        (Círculo ideal: rho = 1.0; Umbral RHO_TH = 0.80)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bw_mask)
 
-    RHO_TH = 0.80       # Umbral de circularidad de cátedra (clasifico_celulas.py)
-
     objetos = []
     monedas = []
     dados = []
@@ -376,20 +381,14 @@ def analizar_dados(img_bgr, gray, dados):
        - Los puntos de las CARAS LATERALES (inclinadas por perspectiva) se proyectan como
          elipses alargadas: rho <= 0.80 (Fp ~ 0.045, 1/Fp ~ 22.0) y Área ~ 630 px^2.
     """
-    RHO_PIP_TH = 0.80
-
-    def _impar_pip(val, minimo=3):
-        v = max(minimo, int(round(val)))
-        return v if v % 2 == 1 else v + 1
-
     suma_total_dados = 0
     for idx, d in enumerate(dados, 1):
         # Umbrales de área y kernels morfológicos dinámicos proporcionales al dado (invariantes a escala):
         # - Ruido residual: < 0.15% del área del dado (~100 px^2 en monedas.jpg)
         # - Pips de cara superior: ~2.6%-3.2% del área del dado vs laterales ~0.85% -> corte en 1.7% (~1130-1265 px^2)
         l_dado = float(np.sqrt(d["area"]))
-        k_close_pip = _impar_pip(l_dado * 0.034, minimo=3)  # 9 en monedas.jpg
-        k_open_pip = _impar_pip(l_dado * 0.019, minimo=3)   # 5 en monedas.jpg
+        k_close_pip = _impar(l_dado * 0.034, minimo=3)  # 9 en monedas.jpg
+        k_open_pip = _impar(l_dado * 0.019, minimo=3)   # 5 en monedas.jpg
         se_close_pip = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_close_pip, k_close_pip))
         se_open_pip = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open_pip, k_open_pip))
 
@@ -429,7 +428,7 @@ def analizar_dados(img_bgr, gray, dados):
             cx_p = float(M["m10"] / M["m00"]) if M["m00"] > 0 else 0.0
             cy_p = float(M["m01"] / M["m00"]) if M["m00"] > 0 else 0.0
 
-            es_cara_superior = (rho_pip > RHO_PIP_TH) and (a_pip > area_pip_top_min)
+            es_cara_superior = (rho_pip > RHO_TH) and (a_pip > area_pip_top_min)
             pip_info = {
                 "cnt": c_pip,
                 "area": a_pip,
@@ -516,7 +515,11 @@ def generar_figuras_problema1(img_bgr, objetos, monedas, dados, etapas, resumen_
         cv2.putText(vis_seg, etiqueta, (cx - 110, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2, cv2.LINE_AA)
 
     axes1[7].imshow(vis_seg)
-    axes1[7].set_title(f"8. Punto A: Segmentación por Factor de Forma\n17 Monedas (rho > 0.80) y 2 Dados (rho <= 0.80)", fontsize=11, fontweight="bold")
+    axes1[7].set_title(
+        f"8. Punto A: Segmentación por Factor de Forma\n"
+        f"{len(monedas)} Monedas (rho > {RHO_TH:.2f}) y {len(dados)} Dados (rho <= {RHO_TH:.2f})",
+        fontsize=11, fontweight="bold"
+    )
 
     for ax in axes1:
         ax.axis("off")
@@ -666,7 +669,7 @@ def generar_figuras_problema1(img_bgr, objetos, monedas, dados, etapas, resumen_
         zorder=4,
     )
 
-    ax_plot.axhline(0.80, color="crimson", linestyle="--", linewidth=1.8, label="Umbral Circularidad (rho = 0.80)")
+    ax_plot.axhline(RHO_TH, color="crimson", linestyle="--", linewidth=1.8, label=f"Umbral Circularidad (rho = {RHO_TH:.2f})")
     u1, u2 = resumen_monedas["umbrales_area"]
     ax_plot.axvline(u1 / 1000.0, color="navy", linestyle=":", linewidth=1.6, label=f"Frontera $0.10 / $1.00 ({u1/1000:.0f}k px²)")
     ax_plot.axvline(u2 / 1000.0, color="darkgreen", linestyle="-.", linewidth=1.6, label=f"Frontera $1.00 / $0.50 ({u2/1000:.0f}k px²)")
@@ -718,7 +721,7 @@ def generar_figuras_problema1(img_bgr, objetos, monedas, dados, etapas, resumen_
 
         axes3[row, 4].imshow(vis_dado)
         axes3[row, 4].set_title(
-            f"4. Clasificación por Factor de Forma\nCara Superior = {d['valor_cara_superior']} (Verde: rho > 0.80)",
+            f"4. Clasificación por Factor de Forma\nCara Superior = {d['valor_cara_superior']} (Verde: rho > {RHO_TH:.2f})",
             fontsize=9.5, fontweight="bold"
         )
 
@@ -763,7 +766,7 @@ def imprimir_reporte_consola(img_shape, objetos, monedas, dados, etapas, resumen
     print("PUNTO A: SEGMENTACIÓN AUTOMÁTICA DE MONEDAS Y DADOS (Factor de Forma Fp = A / P^2)")
     print("-" * 88)
     print("Referencia teórica círculo: Fp = 1/(4*pi) = 0.0796 | 1/Fp = 12.57 | rho = 4*pi*Fp = 1.00")
-    print("Criterio de clasificación : Moneda si rho > 0.80 (1/Fp < 15.71) | Dado si rho <= 0.80")
+    print(f"Criterio de clasificación : Moneda si rho > {RHO_TH:.2f} (1/Fp < {4.0 * np.pi / RHO_TH:.2f}) | Dado si rho <= {RHO_TH:.2f}")
     print(f"{'#':>3} | {'Tipo':<8} | {'Área [px²]':>11} | {'Perímetro [px]':>14} | {'Fp=A/P²':>8} | {'1/Fp':>7} | {'rho=4πFp':>8} | {'Centroide (x,y)':>16}")
     print("-" * 88)
     for idx, obj in enumerate(objetos, 1):
@@ -791,7 +794,7 @@ def imprimir_reporte_consola(img_shape, objetos, monedas, dados, etapas, resumen
     for d in dados:
         print(
             f" - Dado #{d['id_dado']} en BBox={d['bbox']} (rho_dado={d['rho']:.4f}):\n"
-            f"     * Puntos circulares en CARA SUPERIOR (rho > 0.80) : {d['valor_cara_superior']} "
+            f"     * Puntos circulares en CARA SUPERIOR (rho > {RHO_TH:.2f}) : {d['valor_cara_superior']} "
             f"(áreas={[int(p['area']) for p in d['pips_cara_superior']]}, "
             f"rho={[round(p['rho'], 3) for p in d['pips_cara_superior']]})\n"
             f"     * Puntos elípticos en CARAS LATERALES descartados : {len(d['pips_caras_laterales'])} "
