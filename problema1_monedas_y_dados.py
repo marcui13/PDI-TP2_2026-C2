@@ -98,6 +98,60 @@ def imclearborder(img):
 # PUNTO A: SEGMENTACIÓN AUTOMÁTICA DE MONEDAS Y DADOS
 # =============================================================================
 
+def _impar(val, minimo=3):
+    v = max(minimo, int(round(val)))
+    return v if v % 2 == 1 else v + 1
+
+
+def calcular_parametros_escala(h_img, w_img):
+    """
+    Calcula los tamaños de filtro, margen de borde y elementos estructurantes
+    proporcionales a la resolución de la imagen (invarianza a escala).
+    """
+    dim_min = float(min(h_img, w_img))
+    k_med = _impar(dim_min * 0.0041, minimo=3)        # 11 en 3871x2681
+    pad_borde = max(3, int(round(dim_min * 0.0037)))  # 10 px en 3871x2681
+    k_close = _impar(dim_min * 0.0056, minimo=3)      # 15 en 3871x2681
+    k_open = _impar(dim_min * 0.0115, minimo=5)       # 31 en 3871x2681
+    return k_med, pad_borde, k_close, k_open
+
+
+def calcular_gradiente_sobel(img_gray, ksize=3):
+    """
+    Calcula la magnitud exacta del gradiente de Sobel en uint8
+    para suprimir variaciones suaves de iluminación del fondo.
+    """
+    grad_x = cv2.Sobel(img_gray, cv2.CV_64F, 1, 0, ksize=ksize)
+    grad_y = cv2.Sobel(img_gray, cv2.CV_64F, 0, 1, ksize=ksize)
+    grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
+    return np.uint8(np.clip(grad_mag, 0, 255))
+
+
+def optimizar_umbral_gradiente(grad_u8, grad_mean, grad_std, se_close, se_open, area_min):
+    """
+    Realiza un barrido sobre k en [0.5, 1.5] para elegir el mayor factor k
+    que maximiza la cantidad de componentes cerradas válidas tras clausura,
+    rellenado de huecos (imfillhole) y apertura morfológica.
+    """
+    sweep_k = []
+    best_count = -1
+    k_opt = 0.9
+    for k_cand in np.round(np.arange(0.5, 1.55, 0.1), 2):
+        t_cand = float(np.round(grad_mean + k_cand * grad_std))
+        _, bw_e = cv2.threshold(grad_u8, t_cand, 255, cv2.THRESH_BINARY)
+        bw_c = cv2.morphologyEx(bw_e, cv2.MORPH_CLOSE, se_close)
+        bw_f = imfillhole(bw_c)
+        bw_m = cv2.morphologyEx(bw_f, cv2.MORPH_OPEN, se_open)
+        n_lbl, _, st, _ = cv2.connectedComponentsWithStats(bw_m)
+        valid_cnt = sum(1 for idx_lbl in range(1, n_lbl) if st[idx_lbl, cv2.CC_STAT_AREA] >= area_min)
+        sweep_k.append({"k": float(k_cand), "th": t_cand, "valid_count": int(valid_cnt)})
+        # En empate de máximo número de objetos, elegimos el mayor k (bordes más limpios sin abrir contornos)
+        if valid_cnt >= best_count:
+            best_count = valid_cnt
+            k_opt = float(k_cand)
+    return k_opt, sweep_k
+
+
 def segmentar_objetos(img_bgr):
     """
     Ejecuta la tubería de preprocesamiento, detección de bordes por gradiente de Sobel
@@ -106,17 +160,9 @@ def segmentar_objetos(img_bgr):
     # 1. Conversión a escala de grises (Unidad 1 / Unidad 5)
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     h_img, w_img = gray.shape
-    dim_min = float(min(h_img, w_img))
-
-    def _impar(val, minimo=3):
-        v = max(minimo, int(round(val)))
-        return v if v % 2 == 1 else v + 1
 
     # Tamaños de filtro y EE proporcionales a la resolución (invarianza a escala)
-    k_med = _impar(dim_min * 0.0041, minimo=3)     # 11 en 3871x2681
-    pad_borde = max(3, int(round(dim_min * 0.0037)))  # 10 px en 3871x2681
-    k_close = _impar(dim_min * 0.0056, minimo=3)   # 15 en 3871x2681
-    k_open = _impar(dim_min * 0.0115, minimo=5)    # 31 en 3871x2681
+    k_med, pad_borde, k_close, k_open = calcular_parametros_escala(h_img, w_img)
 
     # Demostración de por qué falla el umbralado global directo sobre fondo no uniforme
     th_otsu_global, bw_otsu_global = cv2.threshold(
@@ -129,10 +175,7 @@ def segmentar_objetos(img_bgr):
 
     # 3. Magnitud exacta del Gradiente de Sobel (Unidad 3: PDI_U3_Segmentacion.py)
     #    La derivada espacial suprime el gradiente suave de iluminación del fondo
-    grad_x = cv2.Sobel(gray_med, cv2.CV_64F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(gray_med, cv2.CV_64F, 0, 1, ksize=3)
-    grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
-    grad_u8 = np.uint8(np.clip(grad_mag, 0, 255))
+    grad_u8 = calcular_gradiente_sobel(gray_med, ksize=3)
 
     # Anulamos artefactos de borde proporcionalmente para garantizar semilla limpia en (0, 0)
     grad_u8[:pad_borde, :] = 0
@@ -151,22 +194,9 @@ def segmentar_objetos(img_bgr):
     grad_mean = float(grad_u8.mean())
     grad_std = float(grad_u8.std())
 
-    sweep_k = []
-    best_count = -1
-    k_opt = 0.9
-    for k_cand in np.round(np.arange(0.5, 1.55, 0.1), 2):
-        t_cand = float(np.round(grad_mean + k_cand * grad_std))
-        _, bw_e = cv2.threshold(grad_u8, t_cand, 255, cv2.THRESH_BINARY)
-        bw_c = cv2.morphologyEx(bw_e, cv2.MORPH_CLOSE, se_close)
-        bw_f = imfillhole(bw_c)
-        bw_m = cv2.morphologyEx(bw_f, cv2.MORPH_OPEN, se_open)
-        n_lbl, _, st, _ = cv2.connectedComponentsWithStats(bw_m)
-        valid_cnt = sum(1 for idx_lbl in range(1, n_lbl) if st[idx_lbl, cv2.CC_STAT_AREA] >= AREA_MIN)
-        sweep_k.append({"k": float(k_cand), "th": t_cand, "valid_count": int(valid_cnt)})
-        # En empate de máximo número de objetos, elegimos el mayor k (bordes más limpios sin abrir contornos)
-        if valid_cnt >= best_count:
-            best_count = valid_cnt
-            k_opt = float(k_cand)
+    k_opt, sweep_k = optimizar_umbral_gradiente(
+        grad_u8, grad_mean, grad_std, se_close, se_open, AREA_MIN
+    )
 
     th_grad = float(np.round(grad_mean + k_opt * grad_std))
     _, bw_edges = cv2.threshold(grad_u8, th_grad, 255, cv2.THRESH_BINARY)
