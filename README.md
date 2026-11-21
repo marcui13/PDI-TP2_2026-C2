@@ -5,7 +5,6 @@
 **Año Académico:** 2026 — 2° Cuatrimestre (`2026-C2`)  
 **Integrantes:**
 - **Agustín Marquardt**
-- **Damián Turco**
 - **Fabián Alvarez**
 
 ---

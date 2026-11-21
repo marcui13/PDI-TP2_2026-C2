@@ -10,7 +10,6 @@ tablas cuantitativas, capturas de todas las etapas intermedias y conclusiones.
 
 Autores:
     - Agustín Marquardt
-    - Damián Turco
     - Fabián Alvarez
 ===============================================================================
 """
@@ -59,7 +58,7 @@ def nueva_pagina(titulo_seccion, num_pagina, total_paginas=6):
     ax.plot([4.5, 95.5], [4.8, 4.8], color="#cbd5e1", linewidth=0.8)
     ax.text(
         5.0, 3.0,
-        "Integrantes: Agustín Marquardt, Damián Turco, Fabián Alvarez",
+        "Integrantes: Agustín Marquardt, Fabián Alvarez",
         color="#475569", fontsize=7.8, va="center"
     )
     ax.text(
@@ -171,7 +170,7 @@ def generar_pdf(out_pdf):
         )
         ax1.text(
             50.0, 122.0,
-            "Autores: Agustín Marquardt  |  Damián Turco  |  Fabián Alvarez     •     Año Académico: 2026 (2° Cuatrimestre)",
+            "Autores: Agustín Marquardt  |  Fabián Alvarez     •     Año Académico: 2026 (2° Cuatrimestre)",
             fontsize=8.2, fontweight="bold", color="#0f172a", ha="center", va="center"
         )
 

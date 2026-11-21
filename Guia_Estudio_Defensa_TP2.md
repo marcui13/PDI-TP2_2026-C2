@@ -1,7 +1,7 @@
 # Instructivo Narrativo y Guía de Defensa Oral — Trabajo Práctico N° 2
 ## Procesamiento de Imágenes I (`IA 4.4`) — TUIA — FCEIA — UNR (2026 - C2)
 
-**Autores:** Agustín Marquardt, Damián Turco, Fabián Alvarez  
+**Autores:** Agustín Marquardt, Fabián Alvarez  
 **Archivos de código explicados:**
 - [`problema1_monedas_y_dados.py`](file:///Users/agustinmarquardt/Documents/TUIA/pdi/TP2_2026-C2/problema1_monedas_y_dados.py)
 - [`problema2_deteccion_patentes.py`](file:///Users/agustinmarquardt/Documents/TUIA/pdi/TP2_2026-C2/problema2_deteccion_patentes.py)

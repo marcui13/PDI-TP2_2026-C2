@@ -9,7 +9,6 @@ Imágenes de prueba: img01.png a img12.png (12 escenas vehiculares, 640 x 360 px
 
 Autores:
     - Agustín Marquardt
-    - Damián Turco
     - Fabián Alvarez
 
 Enunciado:

@@ -62,7 +62,7 @@ class NumberedCanvas(canvas.Canvas):
         self.setFillColor(colors.HexColor("#64748B"))
         self.drawString(
             42, 26,
-            "Integrantes: Agustín Marquardt, Damián Turco, Fabián Alvarez — Instructivo de Defensa TP2"
+            "Integrantes: Agustín Marquardt, Fabián Alvarez — Instructivo de Defensa TP2"
         )
         self.drawRightString(w - 42, 26, f"Página {self._pageNumber} de {page_count}")
         self.setStrokeColor(colors.HexColor("#CBD5E1"))
@@ -213,7 +213,7 @@ def crear_pdf_defensa(ruta_pdf):
     story.append(Paragraph("Instructivo Narrativo y Guía de Estudio para Defensa Oral — TP N° 2", title_style))
     story.append(Paragraph(
         "Procesamiento de Imágenes I (IA 4.4) — TUIA — FCEIA — Universidad Nacional de Rosario (2026 - C2)<br/>"
-        "Autores: Agustín Marquardt, Damián Turco, Fabián Alvarez",
+        "Autores: Agustín Marquardt, Fabián Alvarez",
         subtitle_style
     ))
     story.append(HRFlowable(width="100%", thickness=1.2, color=c_accent, spaceAfter=6))
