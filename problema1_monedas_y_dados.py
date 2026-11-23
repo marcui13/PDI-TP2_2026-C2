@@ -47,6 +47,8 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
+from utils import imreconstruct, imfillhole, imclearborder, impar as _impar
+
 
 # =============================================================================
 # CONSTANTES GLOBALES
@@ -56,58 +58,8 @@ RHO_TH = 0.80  # Umbral de circularidad normalizada rho = 4*pi*Fp (clasifico_cel
 
 
 # =============================================================================
-# FUNCIONES MORFOLÓGICAS POR RECONSTRUCCIÓN (UNIDAD 6)
-# =============================================================================
-
-def imreconstruct(marker, mask, kernel=None):
-    """
-    Reconstrucción morfológica por dilatación geodésica iterativa R_mask(marker).
-    Basada en PI_U6_Morfologico_p2_Reconstruccion.py (Unidad 6).
-    """
-    if kernel is None:
-        kernel = np.ones((3, 3), np.uint8)
-    while True:
-        expanded = cv2.dilate(marker, kernel)
-        expanded_intersection = cv2.bitwise_and(src1=expanded, src2=mask)
-        if (marker == expanded_intersection).all():
-            break
-        marker = expanded_intersection
-    return expanded_intersection
-
-
-def imfillhole(img):
-    """
-    Rellenado automático de huecos internos en una imagen binaria (0 / 255).
-    Basado en PI_U6_Morfologico_p2_Reconstruccion.py (Unidad 6).
-    """
-    img_flood_fill = img.copy().astype(np.uint8)
-    h, w = img.shape[:2]
-    mask = np.zeros((h + 2, w + 2), np.uint8)
-    cv2.floodFill(img_flood_fill, mask, (0, 0), 255)
-    img_flood_fill_inv = cv2.bitwise_not(img_flood_fill)
-    img_fh = img | img_flood_fill_inv
-    return img_fh
-
-
-def imclearborder(img):
-    """
-    Elimina objetos conexos que tocan el borde de la imagen mediante
-    reconstrucción morfológica. Basado en PI_U6_Morfologico_p2_Reconstruccion.py (Unidad 6).
-    """
-    marker = img.copy()
-    marker[1:-1, 1:-1] = 0
-    border_elements = imreconstruct(marker=marker, mask=img)
-    img_cb = cv2.subtract(img, border_elements)
-    return img_cb
-
-
-# =============================================================================
 # PUNTO A: SEGMENTACIÓN AUTOMÁTICA DE MONEDAS Y DADOS
 # =============================================================================
-
-def _impar(val, minimo=3):
-    v = max(minimo, int(round(val)))
-    return v if v % 2 == 1 else v + 1
 
 
 def calcular_parametros_escala(h_img, w_img):

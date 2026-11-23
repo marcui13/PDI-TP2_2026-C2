@@ -56,6 +56,8 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
+from utils import imreconstruct, imclearborder, impar as _impar
+
 
 # Referencia de validación (Ground Truth visual de las 12 imágenes del TP2)
 PATENTES_REFERENCIA = {
@@ -75,49 +77,8 @@ PATENTES_REFERENCIA = {
 
 
 # =============================================================================
-# FUNCIONES MORFOLÓGICAS DE LA CÁTEDRA (UNIDAD 6)
-# =============================================================================
-
-def imreconstruct(marker, mask, kernel=None):
-    """
-    Reconstrucción morfológica binaria por dilatación geodésica iterativa
-    hasta convergencia (Unidad 6 - PI_U6_Morfologico_p2_Reconstruccion.py).
-    """
-    if kernel is None:
-        kernel = np.ones((3, 3), np.uint8)
-    prev = np.zeros_like(marker)
-    curr = marker.copy()
-    while not np.array_equal(curr, prev):
-        prev = curr.copy()
-        curr = cv2.min(cv2.dilate(curr, kernel), mask)
-    return curr
-
-
-def imclearborder(f, conn=8):
-    """
-    Elimina componentes conectadas brillantes que tocan el borde de la imagen
-    mediante reconstrucción morfológica desde el marco perimetral (Unidad 6).
-    Ideal en el Punto B para remover el marco blanco de la patente Argentina.
-    """
-    marker = np.zeros_like(f)
-    marker[0, :] = f[0, :]
-    marker[-1, :] = f[-1, :]
-    marker[:, 0] = f[:, 0]
-    marker[:, -1] = f[:, -1]
-    k = cv2.getStructuringElement(
-        cv2.MORPH_RECT if conn == 8 else cv2.MORPH_CROSS, (3, 3)
-    )
-    border_objs = imreconstruct(marker, f, kernel=k)
-    return cv2.subtract(f, border_objs)
-
-
-# =============================================================================
 # PUNTO A: DETECCIÓN AUTOMÁTICA Y SEGMENTACIÓN DE LA PATENTE
 # =============================================================================
-
-def _impar(val, minimo=3):
-    v = max(minimo, int(round(val)))
-    return v if v % 2 == 1 else v + 1
 
 
 def filtrar_candidatos_caracter(bw_mask, scale_f=1.0):
